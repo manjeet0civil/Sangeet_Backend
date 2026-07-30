@@ -53,6 +53,19 @@ WORKDIR /app
 # Latest releases: https://github.com/yt-dlp/yt-dlp/releases
 ARG YTDLP_VERSION=2026.07.04
 
+# Deno — the JavaScript runtime yt-dlp uses to solve YouTube's signature/nsig challenges.
+#
+# THIS IS NOT OPTIONAL. Without a JS runtime yt-dlp prints
+#   "No supported JavaScript runtime could be found ... extraction has been deprecated"
+# and cannot answer the challenge YouTube serves to datacenter IPs — which surfaces to
+# users as "Sign in to confirm you're not a bot" on every video, even public ones.
+# From a home connection YouTube often serves an easier path, which is why the same link
+# works on a laptop and fails on the server.
+#
+# deno is the only runtime yt-dlp enables by default, so having it on PATH is enough —
+# no extra flags, no application code changes.
+ARG DENO_VERSION=2.9.4
+
 # ca-certificates: TLS to Supabase, Backblaze B2 and YouTube.
 # yt-dlp: the standalone Linux build is a self-contained PyInstaller binary — no Python needed.
 #         ffmpeg is NOT installed: the extractor downloads "bestaudio[ext=m4a]" and never
@@ -65,12 +78,18 @@ ARG YTDLP_VERSION=2026.07.04
 # "yt-dlp --version" runs at BUILD time on purpose — a bad download or wrong architecture fails
 # the build here, instead of surfacing as a broken feature after deploy.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL --retry 3 -o /usr/local/bin/yt-dlp \
          "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
     && chmod 755 /usr/local/bin/yt-dlp \
-    && /usr/local/bin/yt-dlp --version
+    && /usr/local/bin/yt-dlp --version \
+    && curl -fsSL --retry 3 -o /tmp/deno.zip \
+         "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip" \
+    && unzip -q /tmp/deno.zip -d /usr/local/bin \
+    && chmod 755 /usr/local/bin/deno \
+    && rm /tmp/deno.zip \
+    && /usr/local/bin/deno --version
 
 COPY --from=build /app/publish .
 
@@ -96,6 +115,11 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
 #  instruction, which would break the build.)
 ENV DOTNET_EnableWriteXorExecute=0
 ENV DOTNET_gcServer=0
+
+# Deno caches to $HOME/.cache/deno by default. The container runs as the unprivileged
+# "app" user whose home may not be writable, and a cache write failure would take the
+# JS runtime down with it — so point it at /tmp, which always is.
+ENV DENO_DIR=/tmp/deno
 
 # Run as the unprivileged "app" user that the .NET 8 images provide (UID 1654).
 # yt-dlp writes downloads to /tmp, which is world-writable, so this needs no extra setup.
