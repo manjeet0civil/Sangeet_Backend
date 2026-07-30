@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>4c0d4492-d7a2-47d7-a437-f3d10f84303e</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.8" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ship the port/CORS config next to the built app so it can be edited on the server. -->
+    <None Update=".env" CopyToOutputDirectory="PreserveNewest" Condition="Exists('.env')" />
+    <None Update=".env.example" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MusicWebsite.Application\MusicWebsite.Application.csproj" />
+    <ProjectReference Include="..\MusicWebsite.Infrastructure\MusicWebsite.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

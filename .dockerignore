@@ -1,0 +1,48 @@
+# =====================================================================
+#  Keeps the build context small AND keeps secrets out of the image.
+#  Anything listed here is invisible to "docker build".
+# =====================================================================
+
+# ---- Secrets: never bake these in. Supply them as environment variables. ----
+# (appsettings.example.json is intentionally NOT excluded — it holds only placeholders.)
+**/appsettings.json
+**/appsettings.Development.json
+**/appsettings.*.local.json
+**/.env
+**/.env.local
+.env
+MusicWebsite/MusicWebsite/.env
+
+# ---- Build output (the image builds from source; stale binaries only confuse it) ----
+**/bin/
+**/obj/
+MusicWebsite/MusicWebsite/publish/
+MusicWebsite/publish/
+
+# ---- Frontend: a separate app, deployed separately ----
+MusicWebsiteFrontEnd/
+
+# ---- Local-only tooling ----
+tools/                 # yt-dlp.exe (Windows) + the one-shot DbMigrator
+db/                    # SQL scripts are applied by hand, not by the API
+
+# ---- Editors / VCS / OS ----
+.git/
+.gitignore
+.vs/
+.idea/
+.vscode/
+.claude/
+**/*.user
+**/*.suo
+**/*.tsbuildinfo
+Thumbs.db
+.DS_Store
+
+# ---- Docs ----
+*.md
+*.docx
+LICENSE
+
+# ---- Scripts that only make sense on the developer's machine ----
+*.ps1

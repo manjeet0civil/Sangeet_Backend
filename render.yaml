@@ -1,0 +1,88 @@
+# =====================================================================
+#  Render Blueprint — Sangeet API
+#  Render ➜ New ➜ Blueprint ➜ point at this repo. It reads this file.
+#
+#  Region: singapore — the same region as the Supabase database (ap-southeast-1).
+#  Every API request makes 1-3 database round trips, so co-locating with the DATABASE is what
+#  matters. Backblaze B2 sits in us-east-005 (Virginia) and cannot follow (B2 has no Asia region),
+#  but that is fine: playback URLs are signed locally and the browser streams straight from B2,
+#  so the backend only talks to B2 during uploads.
+#
+#  Secrets use "sync: false" — Render prompts for them once in the dashboard and never stores
+#  them in this repository.
+# =====================================================================
+services:
+  - type: web
+    name: sangeet-api
+    runtime: docker
+    repo: https://github.com/YOUR_USER/YOUR_REPO      # <-- set this, or remove when deploying from a connected repo
+    branch: develop
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # Render marks a deploy failed if this does not return 2xx. "/" is a 404 by design,
+    # so point it at the liveness endpoint. /health does NOT touch the database on purpose:
+    # a brief database blip must not restart the service.
+    healthCheckPath: /health
+
+    envVars:
+      # ---- Secrets: entered in the Render dashboard, never committed ----
+      - key: ConnectionStrings__MusicDatabase
+        sync: false                 # postgresql://postgres.<ref>:<pw>@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres
+      - key: Jwt__Key
+        sync: false                 # 32+ character random secret
+      - key: Storage__B2__KeyId
+        sync: false
+      - key: Storage__B2__ApplicationKey
+        sync: false
+
+      # ---- Non-secret configuration ----
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: Jwt__Issuer
+        value: MusicWebsite
+      - key: Jwt__Audience
+        value: MusicWebsiteClient
+      - key: Jwt__AccessTokenMinutes
+        value: "120"
+
+      # The frontend's public origin — CORS rejects anything not listed here.
+      # localhost/LAN are always allowed, so this only matters once the frontend is deployed.
+      - key: FRONTEND_ORIGINS
+        value: https://CHANGE-ME.onrender.com
+
+      # ---- Storage (Backblaze B2, us-east-005) ----
+      - key: Storage__Provider
+        value: BackblazeB2
+      - key: Storage__B2__ServiceUrl
+        value: https://s3.us-east-005.backblazeb2.com
+      - key: Storage__B2__Region
+        value: us-east-005
+      - key: Storage__B2__BucketName
+        value: sangeet-audio
+      - key: Storage__B2__PresignExpiryMinutes
+        value: "120"
+      - key: Storage__B2__MaxUploadMegabytes
+        value: "100"
+
+      # ---- YouTube import ----
+      # The Linux yt-dlp binary is installed in the image and resolved from PATH.
+      # 90s keeps a failing download from holding a request open for minutes on a 0.1-CPU instance.
+      - key: Youtube__Provider
+        value: YtDlp
+      - key: Youtube__YtDlpPath
+        value: yt-dlp
+      - key: Youtube__TimeoutSeconds
+        value: "90"
+
+      # ---- Role assigned to new sign-ups ----
+      - key: Roles__DefaultRole
+        value: Admin
+
+      # NOTE: do NOT set BACKEND_PORT here. Render injects PORT, and the app prefers it.
+
+# The frontend lives in its own repository (Sangeet_Frontend) and has its own render.yaml.
+# Deploy this API first, then set VITE_API_URL over there to this service's URL, and come back
+# and point FRONTEND_ORIGINS at the frontend's URL.

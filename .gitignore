@@ -1,0 +1,49 @@
+# ---- Secrets / local config (DO NOT upload) ----
+# These hold the SQL connection string, JWT key, and Backblaze B2 credentials.
+appsettings.json
+appsettings.Development.json
+appsettings.*.local.json
+
+# ---- Per-machine port / URL config ----
+# Each server gets its own .env (copied from .env.example); the templates ARE committed.
+.env
+.env.local
+!.env.example
+!.env.production
+
+# ---- .NET build output ----
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+
+# "dotnet publish" output. Never commit build artefacts: Render builds from source inside Docker,
+# and a stale publish folder is worse than useless (the old one still held Microsoft.Data.SqlClient,
+# a dependency this project no longer has).
+publish/
+
+# ---- Visual Studio / Rider ----
+.vs/
+.idea/
+*.suo
+
+# ---- OS junk ----
+Thumbs.db
+.DS_Store
+
+# built frontend copied into backend
+wwwroot/
+
+# yt-dlp / ffmpeg binaries (re-download as needed)
+# The Docker image downloads the LINUX yt-dlp at build time, so the Windows .exe is never needed
+# here. tools/DbMigrator is a one-shot local migration utility, not needed on a server either.
+tools/
+
+# ---- The frontend is its OWN repository: github.com/manjeet0civil/Sangeet_Frontend ----
+# It sits in this folder locally for convenience, but must not be committed here — otherwise the
+# two repositories would both claim the same files.
+MusicWebsiteFrontEnd/
+
+# ---- Editor / assistant tooling ----
+.claude/
