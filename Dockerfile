@@ -39,9 +39,19 @@ RUN dotnet publish MusicWebsite/MusicWebsite/MusicWebsite.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-# yt-dlp version. Pinned for reproducible builds; bump it (or pass --build-arg) when YouTube
-# changes break extraction — that is the normal maintenance cycle for this tool.
-ARG YTDLP_VERSION=2025.01.26
+# yt-dlp version.
+#
+# THIS GOES STALE AND THE FEATURE BREAKS. YouTube changes its extraction defences
+# constantly and yt-dlp ships fixes most weeks; a build more than a few months old
+# starts failing on every video, typically with "Sign in to confirm you're not a bot".
+#
+# It stays pinned rather than tracking "latest" because Docker layer caching would
+# otherwise keep serving whatever binary was downloaded the first time — a pin that
+# you bump is honest, an unpinned URL that never re-downloads is a silent lie.
+# Bumping this value changes the layer and forces a fresh download.
+#
+# Latest releases: https://github.com/yt-dlp/yt-dlp/releases
+ARG YTDLP_VERSION=2026.07.04
 
 # ca-certificates: TLS to Supabase, Backblaze B2 and YouTube.
 # yt-dlp: the standalone Linux build is a self-contained PyInstaller binary — no Python needed.
