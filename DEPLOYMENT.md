@@ -144,8 +144,13 @@ fails the deploy.
 | `Youtube__Provider` | `YtDlp` |
 | `Youtube__YtDlpPath` | `yt-dlp` |
 | `Youtube__TimeoutSeconds` | `90` |
+| `Youtube__UseProxy` | `true` — see §5a |
 | `Roles__DefaultRole` | `Admin` |
 | `FRONTEND_ORIGINS` | set in step 6 |
+| `Logging__LogLevel__Microsoft.AspNetCore` | `Warning` — otherwise Render's 5-second health check floods the logs and buries real errors |
+
+`Youtube__ProxyUrl` is also required when `Youtube__UseProxy=true`. It carries credentials,
+so treat it as a secret (see §5a).
 
 `__` (double underscore) is .NET's separator for nested config sections: `Storage__B2__KeyId`
 maps to `Storage:B2:KeyId`.
@@ -168,6 +173,68 @@ networks. Note the username is `postgres.<project-ref>`, not plain `postgres`. P
 session mode; 6543 is transaction mode and doesn't support every feature.
 
 Find it at: Supabase → Project Settings → Database → Connection string → **Session pooler**.
+
+---
+
+## 5a. YouTube import — why it needs a proxy
+
+**YouTube blocks datacenter IP ranges.** A hosted server calling YouTube directly fails on
+*every* video — public, unrestricted ones included — with:
+
+```
+ERROR: [youtube] <id>: Sign in to confirm you're not a bot
+```
+
+This is not about the link, the video, or the extractor version. The identical link extracts
+fine from a home connection at the same moment. The only difference is which IP asks.
+
+Things that were tried and did **not** solve it on their own:
+
+| Attempt | Outcome |
+|---|---|
+| Updating yt-dlp (18 months stale → current) | Necessary, not sufficient |
+| Installing Deno (yt-dlp's JS runtime) | Necessary, not sufficient |
+| Free datacenter proxy (Webshare free tier) | Failed — `HTTP 429`, then blocked |
+| **Proxy on a non-blocked IP** | ✅ **Works** |
+
+### The switch
+
+| `Youtube__UseProxy` | Behaviour |
+|---|---|
+| `true` | Imports run; every yt-dlp call goes through `Youtube__ProxyUrl` |
+| `false` | Imports refused instantly: *"YouTube import is turned off on this server. Upload the audio file directly instead."* |
+
+One switch, not two, because the feature cannot work without the proxy on a hosted server —
+so when it is off the app says so immediately instead of making someone wait ~30s for a
+guaranteed failure.
+
+`Youtube__ProxyUrl` format:
+
+```
+socks5h://user:password@host:1080
+http://user:password@host:port
+```
+
+Use **`socks5h`**, not `socks5` — the `h` makes DNS resolve *at the proxy*. With plain `socks5`
+the hostname lookup happens on the server and leaks out over the blocked connection.
+
+The proxy applies to **yt-dlp only**. The database, Backblaze B2 and every API request keep
+using the server's own connection.
+
+### When it breaks again
+
+It will — this is an arms race, not a solved problem.
+
+1. **Try a different proxy endpoint first** (another city/host). Change `Youtube__ProxyUrl`
+   only; no code change or rebuild.
+2. **Then bump `YTDLP_VERSION`** in the `Dockerfile`. It is pinned deliberately, because Docker
+   layer caching would keep serving the first binary forever if the URL said "latest".
+3. **Check the logs for the raw error** — the app logs yt-dlp's stderr verbatim, which
+   distinguishes an IP block (`not a bot`) from rate limiting (`429`) from a broken proxy (`407`).
+4. **Fallback that always works:** set `Youtube__UseProxy=false` and upload audio files directly.
+
+> Switching `Youtube__Provider` to `YoutubeExplode` does **not** help. The block is about the
+> server's IP address, not the extractor.
 
 ---
 
@@ -244,9 +311,11 @@ After rotating either credential, update the Render environment variable **and**
   `bestaudio[ext=m4a]` as-is.
 - **Ephemeral filesystem.** Fine here: audio lives in B2 and yt-dlp only uses `/tmp` as scratch.
   Anything written locally disappears on redeploy.
-- **YouTube import may fail intermittently.** YouTube blocks datacenter IP ranges with "confirm
-  you're not a bot". This affects any extractor — it's IP reputation, not a library problem. Direct
-  MP3 upload is unaffected. Setting `Youtube__Provider=YoutubeExplode` will *not* fix it.
+- **YouTube import needs a proxy** — see §5a. YouTube blocks datacenter IP ranges, so it fails on
+  every video without one. Expect to change the proxy endpoint occasionally; direct MP3 upload is
+  unaffected and always works.
+- **Each import pulls ~3–5 MB through the proxy.** Roughly 200–300 songs per GB, so bandwidth is a
+  non-issue on any plan.
 - **Audio streaming does not consume Render bandwidth** — presigned URLs mean the browser fetches
   audio directly from B2. Watch B2 egress instead, which is what actually scales with listening.
 
@@ -265,5 +334,8 @@ After rotating either credential, update the Render environment variable **and**
 | Requests go to the wrong URL | `VITE_API_URL` is missing `https://`, so axios treats it as a relative path. |
 | Direct links like `/login` return 404 | SPA fallback missing. `public/_redirects` (Cloudflare/Netlify) or the rewrite rule in `render.yaml` (Render). |
 | Frontend updates don't appear | Service worker cache. `public/_headers` sets `no-cache` on `sw.js` and `index.html`; hard-refresh, or unregister the service worker. |
-| YouTube import fails on the server but works locally | Datacenter IP blocking (see §9). Not fixable by switching extractor. |
+| YouTube: "Sign in to confirm you're not a bot" | The proxy IP is blocked, or `Youtube__UseProxy=false`. Try a different proxy endpoint (§5a). Not fixable by switching extractor. |
+| YouTube: `HTTP 429 Too Many Requests` | The proxy works but its IP is rate-limited — usually a shared/free proxy. Use a different endpoint. |
+| YouTube: `407 Proxy Authentication Required` | Wrong proxy credentials, or that endpoint isn't included in your plan. |
+| YouTube: "turned off on this server" | Expected — `Youtube__UseProxy=false`. Set it to `true` with a working `Youtube__ProxyUrl`. |
 | Docker build fails restoring packages | Stale `bin/`/`obj/` reached the build context. `.dockerignore` excludes them — don't remove those lines. |

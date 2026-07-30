@@ -26,6 +26,20 @@ usefully — **every bug we already hit and how we fixed it**, so we don't re-di
 > functions as `SELECT * FROM fn(p_x => @X)`. Read `db/postgres/README.md` before touching the data
 > layer; it explains citext (case-insensitivity), SQLSTATE error codes, and the pagination split.
 >
+> **Deployed to Render (2026-07-30):** API at `sangeet-api-9m9d.onrender.com` (Docker, Singapore,
+> health check `/health`), frontend at `sangeet-web.onrender.com` (static site). Two GitHub repos:
+> `Sangeet_Backend` and `Sangeet_Frontend`. All secrets live in Render environment variables —
+> `appsettings.json` is gitignored and is NOT in the image. See `DEPLOYMENT.md`.
+>
+> **YouTube import requires a proxy — read `DEPLOYMENT.md` §5a before touching it.** YouTube blocks
+> datacenter IPs, so the hosted server fails on *every* video with "Sign in to confirm you're not a
+> bot", including public ones; the same link works from a home connection. Neither updating yt-dlp
+> (it was 18 months stale) nor installing Deno (its JS runtime) fixed it on their own — both were
+> necessary but not sufficient. A free datacenter proxy also failed (`429`, then blocked). What
+> works is `Youtube__UseProxy=true` plus a `Youtube__ProxyUrl` on a non-blocked IP. When it breaks
+> again, change the proxy endpoint first; bump `YTDLP_VERSION` second. Switching to
+> `YoutubeExplode` does **not** help — the block is about the IP, not the extractor.
+>
 > `Jwt:Key` has been set to a strong random secret. To expose online use a **tunnel** (Cloudflare
 > quick tunnel / ngrok) — see HOSTING.md.
 > **Keep the "Current state" and "Backlog" sections updated as work continues.**
