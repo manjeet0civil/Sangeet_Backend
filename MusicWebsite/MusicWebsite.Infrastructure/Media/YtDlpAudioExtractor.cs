@@ -154,17 +154,33 @@ public partial class YtDlpAudioExtractor : IYoutubeAudioExtractor
             CreateNoWindow = true
         };
 
-        // Route ONLY yt-dlp through the proxy when one is configured. Nothing else in the
-        // application uses it — the database, B2 and every API call keep the server's own
-        // connection. This is what gets past YouTube blocking datacenter IPs.
+        // Youtube:UseProxy is the master switch for the whole feature. It is off by default, and
+        // when off we refuse immediately rather than attempt a direct call: YouTube blocks
+        // datacenter IPs, so an unproxied request from the server fails on every video with
+        // "Sign in to confirm you're not a bot". Failing fast with an honest message beats making
+        // someone wait ~30s for a download that cannot succeed.
+        if (!_settings.UseProxy)
+        {
+            throw new AppException(
+                "YouTube import is turned off on this server. Upload the audio file directly instead.",
+                503);
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.ProxyUrl))
+        {
+            _logger.LogError("Youtube:UseProxy is true but Youtube:ProxyUrl is empty.");
+            throw new AppException(
+                "YouTube import is misconfigured on this server. Please contact the administrator.",
+                500);
+        }
+
+        // Route ONLY yt-dlp through the proxy. Nothing else in the application uses it — the
+        // database, B2 and every API call keep the server's own connection.
         //
         // Added to ArgumentList rather than to `args` on purpose: the failure log below prints
         // `args`, and the proxy URL carries a username and password that must stay out of logs.
-        if (!string.IsNullOrWhiteSpace(_settings.ProxyUrl))
-        {
-            psi.ArgumentList.Add("--proxy");
-            psi.ArgumentList.Add(_settings.ProxyUrl);
-        }
+        psi.ArgumentList.Add("--proxy");
+        psi.ArgumentList.Add(_settings.ProxyUrl);
 
         foreach (var a in args) psi.ArgumentList.Add(a);
 
