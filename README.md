@@ -24,8 +24,9 @@ over a **PostgreSQL (Supabase)** database accessed with **Dapper + PL/pgSQL func
 | **Duplicate prevention** | ✅ **Done** — exact-file dedup (SHA-256) + one-import-per-YouTube-video (see §8.2) |
 | **Priority = up/down voting** | ✅ **Done** — one vote per user per song, search ranks by total (see §8.3) |
 | **Roles + permanent song delete** | ✅ **Done** — User/Admin/SuperAdmin, delete removes DB row + cloud file (see §8.4) |
+| **Artist, category & lyrics** | ✅ **Done** — all filled in automatically on upload; categories create themselves; lyrics are **looked up, never generated** (see §8.5) |
 | Change password | ❌ Not possible yet — no stored proc (see §8) |
-| Search by artist / album / genre | ❌ Columns don't exist in DB (see §8) |
+| Search by artist | ✅ **Done** in §8.5 — `procSongSearch` matches artist. Album/genre search still needs an `album` column. |
 | **Frontend (React + TypeScript)** | ✅ **Built** — Vite PWA in `MusicWebsiteFrontEnd/` (see its README) |
 
 Last verified: full build **0 warnings / 0 errors**; register → login → songs → playlists flows
@@ -134,7 +135,8 @@ untouched, as a fallback.)*
 |-------|---------|-----------------|
 | `Account` | Login credentials | `AccountId` (PK, GUID), `Email`, `PasswordHash`, `IsActive`, `Created/Updated` |
 | `Users` | Profile, 1:1 with Account | `UserId` (PK), `AccountId` (FK), `UserName`, `FullName`, `ProfileImageUrl` |
-| `Songs` | **Global** song library | `SongId` (PK), `SongName`, `SongUrl`, `ImageUrl`, `DurationInSeconds`, `Priority`, `IsDeleted` (soft delete) |
+| `Songs` | **Global** song library | `SongId` (PK), `SongName`, `SongUrl`, `ImageUrl`, `DurationInSeconds`, `Priority`, `IsDeleted` (soft delete), `Artist` (`citext`), `CategoryId` (FK), `Lyrics`, `LyricsSynced` — see §8.5 |
+| `Category` | Song categories, **created on demand** | `CategoryId` (PK), `Name` (`citext`, UNIQUE), `Created` — see §8.5 |
 | `Playlists` | Per-account playlists | `PlaylistId` (PK), `AccountId` (FK), `PlaylistName` |
 | `PlaylistSongs` | Join (many-to-many) | `PlaylistSongId` (PK), `PlaylistId` (FK), `SongId` (FK) |
 
@@ -145,7 +147,8 @@ affected row; Delete/Remove procs return `Success` + `Message`.
 
 - **Account:** `procAccountInsert`, `procAccountUpdate`, `procAccountDelete`, `procAccountGetById`, `procAccountLogin`
 - **Users:** `procUserInsert`, `procUserUpdate`, `procUserGetById`, `procUserGetByUserName`, `procUserGetAll`, **`procUserGetByAccountId`** ← *added by us, see §7*
-- **Songs:** `procSongInsert`, `procSongUpdate`, `procSongDelete`, `procSongGetById`, `procSongGetAll`, `procSongSearch`
+- **Songs:** `procSongInsert`, `procSongUpdate`, `procSongDelete`, `procSongGetById`, `procSongGetAll`, `procSongSearch`, **`procSongFindByTitleArtist`**, **`procSongSetLyrics`** ← *added by §8.5*
+- **Categories:** **`procCategoryGetOrCreate`**, **`procCategoryGetAll`** ← *added by §8.5*
 - **Playlists:** `procPlaylistInsert`, `procPlaylistUpdate`, `procPlaylistDelete`, `procPlaylistGetById`, `procPlaylistGetByAccountId`
 - **PlaylistSongs:** `procPlaylistSongAdd`, `procPlaylistSongRemove`, `procPlaylistSongGetByPlaylistId`
 
@@ -201,6 +204,35 @@ Files live in the **private** B2 bucket `sangeet-audio` (region `us-east-005`), 
   `.jpg/.jpeg/.png/.webp/.gif`; request size capped at 100 MB. If DB insert fails after upload, the
   uploaded blob(s) are deleted (no orphans).
 - **Verified:** upload → presigned URL → download returns byte-identical file (MD5 match).
+
+### Deleting really deletes — the B2 versioning trap
+
+> ⚠️ **A plain S3 `DeleteObject` does not free any space on a B2 bucket.** B2 buckets keep **all
+> versions** by default, and on a versioned bucket a keyless delete only writes a **delete marker**:
+> the file vanishes from listings and from the app, while the bytes stay and keep costing storage.
+
+This bit us for real. A SuperAdmin deleted a song from the UI, the database row was hard-deleted
+correctly — and the file was still in the bucket. An audit found **15.4 MB held in 16 hidden
+versions behind 17 delete markers**, going back weeks.
+
+`BackblazeB2StorageService.DeleteAsync` therefore **enumerates every version of the key and deletes
+each one by version id**, rather than issuing one keyless delete. It behaves identically on an
+unversioned bucket (which simply reports a single version), so nothing depends on the bucket's
+setting. If listing versions is refused — the B2 application key needs the *listFiles* capability —
+it logs a warning and falls back to the old single delete, which is no worse than before and never
+blocks the user's delete.
+
+**Verified end-to-end:** upload → probe B2 (`1 version, 84,697 bytes`) → `DELETE /api/songs/{id}` →
+probe again (`0 versions, 0 bytes, no delete marker`).
+
+A B2 lifecycle rule of *"Keep only the last version"* is still worth setting in the console — it
+mops up any historical versions that predate this fix.
+
+> ⚠️ **Known gap — deleting a *user* still orphans their files.** `AdminService.DeleteAccountAsync`
+> calls `procAccountCascadeDelete` directly and never touches `IStorageService`, so an account
+> deletion removes that user's song rows while leaving every audio file and cover in the bucket
+> (8 files / 9.82 MB found orphaned this way). `DELETE /api/songs/{id}` is clean; account deletion
+> is not. Fix: collect the account's songs and delete their blobs before the cascade.
 
 > ⚠️ The B2 application key was shared in plaintext during setup — consider rotating it in Backblaze,
 > then edit `KeyId` / `ApplicationKey` in `MusicWebsite/appsettings.json` and restart the API.
@@ -283,12 +315,151 @@ Role-based access control on `Account.Role`, carried in the JWT (`role` claim) a
 - ⚠️ JWT gotcha: `options.MapInboundClaims = false` (Program.cs) is required so the short `role`
   claim isn't remapped — otherwise `[Authorize(Roles=...)]` silently 403s. See HANDOFF §5.9.
 
+## 8.5 Artist, category & lyrics (DONE)
+
+Songs now carry a **performer**, a **category** and **lyrics** — all worked out automatically when
+the song is uploaded, not typed in by hand.
+
+### Where the metadata comes from
+
+Four sources, layered cheapest-and-most-trustworthy first. Each one only fills the gaps the
+previous one left, so a good source is never overwritten by a worse guess:
+
+| # | Source | Supplies | Applies to |
+|---|--------|----------|------------|
+| 1 | What the uploader typed | Always wins | Both |
+| 2 | **Embedded tags** — ID3v1/v2, MP4 atoms, Vorbis comments (TagLibSharp) | Artist, title, album, genre, **duration** | File upload |
+| 3 | **YouTube's structured music fields** (`artist`/`track`/`album`/`genre` from yt-dlp) | Same, from the label's own metadata rather than the uploader | YouTube import |
+| 4 | **Title parser** (`TrackTitleParser`) | Cleans the title, and the artist when the channel reveals it | YouTube import |
+
+Source 2 also fixes a long-standing bug: uploaded songs showed **no duration** because nothing was
+measuring it. TagLib reads the real length off the file.
+
+### The title parser, and what it deliberately won't do
+
+YouTube titles bury the song name under the film, cast and label:
+
+```
+"Kahi Door Jab with Lyrics | Anand | Rajesh Khanna, Sumita Sanyal | Saregama Music"
+        →  title: "Kahi Door Jab",  artist: (none)
+```
+
+It keeps everything before the first `|`, strips bracketed asides (`(Official Video)`, `[4K]`),
+promo phrases (`with Lyrics`, `Full Video Song`) and quality markers, and reads the artist from a
+`"<Artist> - Topic"` channel — those are auto-generated by YouTube from the label's metadata and are
+the single most reliable artist signal available. Ordinary channel names are rejected: `T-Series`
+and `Saregama Music` are labels, not artists.
+
+> ⚠️ **It does NOT split `"A - B"` into artist and title when nothing else identified the artist.**
+> `"Arijit Singh - Tum Hi Ho"` and `"Tum Hi Ho - Aashiqui 2"` are the same shape and mean opposite
+> things, so guessing is wrong about as often as it's right. An early version did guess, and turned
+> `"Tum Hi Ho - Aashiqui 2"` into artist `"Tum Hi Ho"`, title `"Aashiqui 2"` — exactly backwards.
+> A fabricated artist is the expensive mistake: it's written to the row, it blocks the real song
+> from being uploaded later via the duplicate check below, and it sends the lyrics lookup after a
+> performer who doesn't exist. A slightly noisy title costs nothing by comparison and can be edited
+> on the confirm screen. **This is the one place where an LLM would genuinely help** — see
+> "Why lyrics aren't AI-generated" below for where it would *not*.
+
+### Categories create themselves
+
+There's no list to seed or administer. The first song that declares `"Bollywood"` creates that
+category; everything after reuses it. `proccategorygetorcreate` is case-insensitive (`citext`), so
+`"bollywood"` and `"Bollywood"` are one category, not two. A blank category → `Uncategorized`.
+
+### Duplicate prevention by title + artist
+
+Complements the byte-hash and video-id checks in §8.2, which only catch the *identical* file or the
+*identical* video. Re-uploading the same song from a different source is now refused:
+
+**409 `"Tum Hi Ho" by Arijit Singh is already in the library.`**
+
+**SuperAdmin is exempt** — a cover, a remix, a live cut and a re-recording are all legitimately
+"the same title by the same artist", and someone has to be able to add them. Matching is trimmed
+and case-insensitive; a null artist matches a null artist, so untagged uploads still dedupe on
+title alone.
+
+### Lyrics — looked up, never generated
+
+Two free sources, **no API key or account for either**, tried in order and stopping at the first
+real answer:
+
+| Order | Source | Gives | Notes |
+|-------|--------|-------|-------|
+| 1 | **LRCLIB** (`lrclib.net`) | Plain **+ synced `.lrc`** | The only one with timestamps that scroll with playback. Matches on artist+track+album+duration. |
+| 2 | **lyrics.ovh** (`api.lyrics.ovh`) | Plain text only | Needs an artist name. Fallback for LRCLIB misses and outages. |
+
+Because it's a chain, the feature keeps working when one service is down and **quietly upgrades back
+to synced lyrics when LRCLIB recovers — no code change or redeploy.**
+
+> ⚠️ **LRCLIB's API was returning `504` from its own gateway when this was built** (its website
+> answered `200`; the API did not). That's the same failure behind the earlier `408`s — not a blip.
+> Until it recovers you get plain lyrics from lyrics.ovh, not scrolling ones.
+
+**A circuit breaker** (`LyricsSourceCircuitBreaker`, singleton) skips a source for 10 minutes after
+3 consecutive failures, then probes it once. Without it every upload paid LRCLIB's full timeout
+before falling through to the fallback — **measured at 7.5 s per upload, now 1.5 s**. A `404` is a
+*healthy* "not in our catalogue" and never counts against a source; a `5xx` or timeout does.
+
+The lookup runs **after** the song row, audio and cover are already saved, is capped by a total
+wall-clock budget, and swallows every failure — **it can never fail an upload**. A song that isn't
+catalogued simply gets no lyrics.
+
+#### Why lyrics aren't AI-generated
+
+Asked directly, and worth writing down. An LLM **cannot** reproduce a copyrighted song's words: it
+either refuses, or invents plausible, well-formed verses that are *not* the song. For a player
+that's the worst possible failure — wrong lyrics scrolling against a song the listener knows, with
+no way to detect it, because the output looks perfect. It also has never heard the audio, so it
+can't produce the `[mm:ss.xx]` timestamps synced lyrics need. Real lyrics come from a real database
+or they don't come. (Speech-to-text on the actual audio — Whisper — *is* a legitimate future
+option, but it needs roughly a CPU-minute per song, which the Render free tier can't provide.)
+
+### Config — `appsettings.json`
+
+```jsonc
+"Lyrics": {
+  "Enabled": true,             // master switch; false = no lookup at all
+  "UseLrcLib": true,           // skip one source without disabling the feature
+  "UseLyricsOvh": true,
+  "TimeoutSeconds": 6,         // per source
+  "TotalTimeoutSeconds": 15    // ceiling across the whole chain
+}
+```
+
+### Schema & code
+
+- **Migration:** `db/postgres/03_artist_category_lyrics.sql` (idempotent, wrapped in a transaction).
+  Adds the `category` table; `songs.artist` (`citext`), `songs.categoryid`, `songs.lyrics`,
+  `songs.lyricssynced`; and indexes on `(songname, artist)` and `categoryid`.
+  **Every change is additive**, and Dapper ignores columns it doesn't recognise, so the previously
+  deployed API kept running against this schema until the matching build rolled out.
+- **New functions:** `proccategorygetorcreate`, `proccategorygetall`, `procsongfindbytitleartist`,
+  `procsongsetlyrics`. Eight song functions were **dropped and recreated** — PostgreSQL refuses
+  `CREATE OR REPLACE` when a function's return columns change.
+- **Endpoint:** `GET /api/songs/categories` → `[{ categoryId, name, totalSongs }]`.
+- **Lyrics are returned by `GET /api/songs/{id}` only** — list endpoints omit them so a song list
+  doesn't carry a few KB per row for something almost never displayed.
+- **Frontend:** artist on rows, cards and the player bar; a full-screen **lyrics panel** behind the
+  mic button (active line highlighted and scrolled to, click a line to seek); artist + category
+  fields on the upload form; the YouTube panel prefills with the *cleaned* title and artist so it
+  can be corrected before importing rather than discovered afterwards.
+
+> 💡 **PL/pgSQL gotcha, cost two failed migrations.** A function with an `OUT` column named `name`
+> can't use `ON CONFLICT (name)` — PL/pgSQL can't tell the variable from the table column and errors
+> with *"column reference is ambiguous"*. Use a bare `ON CONFLICT DO NOTHING`, or qualify every
+> reference. The same applies to `ON CONFLICT (songid, accountid)` in `procsongvoteset`.
+
 ## 9. Deferred / not-yet-possible (the backlog)
 
 | Item | Why | What's needed to do it |
 |------|-----|------------------------|
 | **Change password** | No stored proc exists (`procAccountUpdate` only changes email/isactive) | Add `procAccountChangePassword`, an `IAccountService` method + endpoint. |
-| **Search by artist/album/genre** | Those columns don't exist in `Songs` | Add columns, alter `procSongInsert/Update/Search`. |
+| ~~**Search by artist/album/genre**~~ | **Done in §8.5** — `artist` + `categoryid` exist and `procSongSearch` matches artist. `album` is read but not yet stored. | Add `songs.album` if album search is wanted. |
+| **Category browsing in the UI** | `GET /api/songs/categories` exists and returns counts; nothing consumes it yet | Add a category filter/page to the frontend. |
+| **Backfill existing songs** | Songs uploaded before §8.5 have no artist, category or lyrics | Re-derive from their titles and run the lyrics lookup — no audio re-upload needed. |
+| **Account delete orphans B2 files** | `AdminService.DeleteAccountAsync` never calls `IStorageService` (see §8) | Delete the account's song blobs before the DB cascade. |
+| **Clean up the historical B2 backlog** | ~25 MB of hidden versions + orphans predate the delete fix in §8 | One-off sweep, or a "keep only the last version" lifecycle rule in the B2 console. |
+| **AI metadata cleanup** | The title parser can't resolve `"A - B"` without an artist hint (§8.5) | An LLM extracting title/artist from messy titles, behind a config flag like `Youtube:UseProxy`. Only for *metadata* — never for lyrics. |
 | **Refresh tokens** | Flagged "future" in the docs | Add refresh-token table + rotation. |
 | **Upload validation / malware scan, rate limiting, CDN** | Feasibility doc flags these before public launch | Address before opening uploads beyond trusted users. |
 
@@ -395,12 +566,13 @@ All routes except register/login require `Authorization: Bearer <token>`.
 ### Songs — `/api/songs`
 | Method | Route | Notes |
 |--------|-------|-------|
-| GET | `/?search=term` | List all, or filter by song name. `songUrl`/`imageUrl` come back as presigned B2 URLs. |
-| GET | `/{songId}` | Song by id. |
+| GET | `/?search=term` | List all, or filter by song name **or artist**. `songUrl`/`imageUrl` come back as presigned B2 URLs. Lyrics are **not** included. |
+| GET | `/{songId}` | Song by id — **the only endpoint that returns `lyrics` / `lyricsSynced`**. |
+| **GET** | **`/categories`** | `[{ categoryId, name, totalSongs }]`. Categories are created by uploads, so this list grows on its own (§8.5). |
 | POST | `/` | JSON `{ songName, songUrl, imageUrl?, durationInSeconds?, priority? }` — create from a direct URL (no file). |
-| **POST** | **`/upload`** | **multipart/form-data**: `audioFile` (required), `coverImage?`, `songName`, `durationInSeconds?`, `priority?` → uploads to B2, saves song. Max 100 MB. |
-| **POST** | **`/youtube/preview`** | JSON `{ url }` → `{ title, author, durationInSeconds, thumbnailUrl }`. Metadata only, no download. |
-| **POST** | **`/youtube`** | JSON `{ url, songName?, priority? }` → extracts audio + thumbnail from YouTube, uploads to B2, saves song. `502` if the server can't reach YouTube. |
+| **POST** | **`/upload`** | **multipart/form-data**: `audioFile` (required), `coverImage?`, `songName`, `artist?`, `category?`, `durationInSeconds?`, `priority?` → uploads to B2, saves song. Blank `artist`/`category`/`durationInSeconds` are read from the file's own tags (§8.5). `409` if the same title+artist already exists (SuperAdmin exempt). |
+| **POST** | **`/youtube/preview`** | JSON `{ url }` → `{ title, author, durationInSeconds, thumbnailUrl, suggestedSongName, suggestedArtist, suggestedCategory }`. The `suggested*` fields are what the import will actually save (§8.5). Metadata only, no download. |
+| **POST** | **`/youtube`** | JSON `{ url, songName?, artist?, category?, priority? }` → extracts audio + thumbnail from YouTube, uploads to B2, saves song. `502` if the server can't reach YouTube. |
 | **POST** | **`/{songId}/vote`** | JSON `{ value: 1 \| -1 \| 0 }` → sets the user's single up/down vote; returns the song with new `priority` + `myVote`. |
 | PUT | `/{songId}` | Update song. |
 | DELETE | `/{songId}` | **Permanent delete** (DB + cloud files). User → 403, Admin → own uploads only, SuperAdmin → any. |

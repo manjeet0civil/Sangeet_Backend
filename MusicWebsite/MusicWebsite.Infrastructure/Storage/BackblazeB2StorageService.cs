@@ -46,16 +46,97 @@ public class BackblazeB2StorageService : IStorageService
         return new StorageResult(ResolveReadUrl(key)!, key);
     }
 
+    /// <summary>
+    /// Permanently removes an object — every stored version of it, not just the newest.
+    ///
+    /// A plain S3 <c>DeleteObject</c> is NOT enough on Backblaze. B2 buckets keep all versions by
+    /// default, and on a versioned bucket a keyless delete only writes a *delete marker*: the file
+    /// disappears from listings and from the app, while the actual bytes stay and keep costing
+    /// storage. An audit of this bucket found 15.4 MB held that way — files a SuperAdmin had
+    /// deleted months earlier were still being paid for.
+    ///
+    /// So we enumerate every version of the key (including any older delete markers, which are
+    /// themselves entries that accumulate) and delete each one by its version id. That frees the
+    /// bytes immediately and behaves identically whether or not versioning is enabled — an
+    /// unversioned bucket simply reports one version.
+    /// </summary>
     public async Task DeleteAsync(string? storageKey, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(storageKey) || IsAbsoluteUrl(storageKey))
             return;
 
-        await _s3.DeleteObjectAsync(new DeleteObjectRequest
+        List<(string Key, string VersionId)> versions;
+        try
         {
-            BucketName = _settings.BucketName,
-            Key = storageKey
-        }, cancellationToken);
+            versions = await ListAllVersionsAsync(storageKey, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Listing versions needs the listAllBucketNames/listFiles capability on the B2
+            // application key. If it's missing we can still hide the object, which is no worse
+            // than the old behaviour — so degrade rather than block the user's delete.
+            _logger.LogWarning(ex,
+                "Could not list versions of {Key}; falling back to a single delete, which may leave bytes stored", storageKey);
+
+            await _s3.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = _settings.BucketName,
+                Key = storageKey
+            }, cancellationToken);
+            return;
+        }
+
+        if (versions.Count == 0)
+        {
+            _logger.LogInformation("Nothing to delete for {Key} — already gone from B2", storageKey);
+            return;
+        }
+
+        foreach (var (key, versionId) in versions)
+        {
+            await _s3.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = _settings.BucketName,
+                Key = key,
+                VersionId = versionId
+            }, cancellationToken);
+        }
+
+        _logger.LogInformation("Permanently deleted {Key} from B2 ({Count} version(s))", storageKey, versions.Count);
+    }
+
+    /// <summary>
+    /// Every stored version of one exact key. <c>Prefix</c> only narrows the scan — it matches by
+    /// prefix, so "songs/a.mp3" would also return "songs/a.mp3.bak" — hence the exact-key filter
+    /// before anything is deleted.
+    /// </summary>
+    private async Task<List<(string Key, string VersionId)>> ListAllVersionsAsync(string storageKey, CancellationToken cancellationToken)
+    {
+        var found = new List<(string, string)>();
+        string? keyMarker = null, versionMarker = null;
+
+        do
+        {
+            var page = await _s3.ListVersionsAsync(new ListVersionsRequest
+            {
+                BucketName = _settings.BucketName,
+                Prefix = storageKey,
+                KeyMarker = keyMarker,
+                VersionIdMarker = versionMarker
+            }, cancellationToken);
+
+            foreach (var version in page.Versions)
+            {
+                if (!string.Equals(version.Key, storageKey, StringComparison.Ordinal)) continue;
+                if (string.IsNullOrEmpty(version.VersionId)) continue;
+                found.Add((version.Key, version.VersionId));
+            }
+
+            keyMarker = page.IsTruncated == true ? page.NextKeyMarker : null;
+            versionMarker = page.IsTruncated == true ? page.NextVersionIdMarker : null;
+        } while (keyMarker is not null);
+
+        return found;
     }
 
     public string? ResolveReadUrl(string? storageKeyOrUrl)
