@@ -32,6 +32,12 @@ public static class StoredProcedures
     public const string SongVoteSet = "procSongVoteSet";
     public const string SongHardDelete = "procSongHardDelete";
     public const string SongGetByUploader = "procSongGetByUploader";
+    public const string SongFindByTitleArtist = "procSongFindByTitleArtist";
+    public const string SongSetLyrics = "procSongSetLyrics";
+
+    // Categories
+    public const string CategoryGetOrCreate = "procCategoryGetOrCreate";
+    public const string CategoryGetAll = "procCategoryGetAll";
 
     // Playlists
     public const string PlaylistInsert = "procPlaylistInsert";

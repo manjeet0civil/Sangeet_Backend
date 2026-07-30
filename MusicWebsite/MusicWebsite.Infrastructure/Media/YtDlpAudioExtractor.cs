@@ -42,7 +42,8 @@ public partial class YtDlpAudioExtractor : IYoutubeAudioExtractor
             GetString(root, "title") ?? "Untitled",
             GetString(root, "uploader") ?? GetString(root, "channel"),
             GetDurationSeconds(root),
-            GetString(root, "thumbnail"));
+            GetString(root, "thumbnail"),
+            GetMusicMetadata(root));
     }
 
     public async Task<ExtractedYoutubeAudio> ExtractAsync(string url, CancellationToken cancellationToken = default)
@@ -55,6 +56,7 @@ public partial class YtDlpAudioExtractor : IYoutubeAudioExtractor
         var duration = GetDurationSeconds(root);
         var thumbUrl = GetString(root, "thumbnail");
         var videoId = GetString(root, "id") ?? TryGetVideoId(url) ?? Guid.NewGuid().ToString("N");
+        var music = GetMusicMetadata(root);
 
         // 2. Download the best audio-only stream into a dedicated temp folder.
         var dir = Path.Combine(Path.GetTempPath(), "ytdlp_" + Guid.NewGuid().ToString("N"));
@@ -107,6 +109,7 @@ public partial class YtDlpAudioExtractor : IYoutubeAudioExtractor
                 Title = title,
                 Author = author,
                 DurationInSeconds = duration,
+                Music = music,
                 AudioFilePath = audioPath,
                 AudioFileName = $"{videoId}{ext}",
                 AudioContentType = contentType,
@@ -249,6 +252,34 @@ public partial class YtDlpAudioExtractor : IYoutubeAudioExtractor
 
     private static string? GetString(JsonElement root, string prop)
         => root.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>
+    /// Reads yt-dlp's structured music fields. YouTube populates these from the label's own
+    /// metadata for anything released through YouTube Music, so when they're present they beat
+    /// any amount of title parsing. Ordinary uploads have none of them and we get nulls, which
+    /// is the caller's cue to fall back to the title parser.
+    /// </summary>
+    private static TrackMetadata GetMusicMetadata(JsonElement root)
+    {
+        // "artist" can be a comma-joined list of every credited performer; the first is the lead.
+        var artist = FirstOf(GetString(root, "artist") ?? GetString(root, "creator"));
+
+        return new TrackMetadata(
+            Title: GetString(root, "track"),
+            Artist: artist,
+            Album: GetString(root, "album"),
+            Category: FirstOf(GetString(root, "genre")),
+            DurationInSeconds: GetDurationSeconds(root));
+    }
+
+    /// <summary>Takes the first entry of a comma-separated list, e.g. "Arijit Singh, Palak Muchhal".</summary>
+    private static string? FirstOf(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var first = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(first) ? null : first;
+    }
 
     private static int? GetDurationSeconds(JsonElement root)
     {

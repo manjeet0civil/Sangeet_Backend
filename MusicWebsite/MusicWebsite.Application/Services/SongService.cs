@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
 using MusicWebsite.Application.Common;
 using MusicWebsite.Application.DTOs.Songs;
 using MusicWebsite.Application.Interfaces.Media;
@@ -17,18 +18,30 @@ public class SongService : ISongService
     private static readonly HashSet<string> AllowedImageExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".jpg", ".jpeg", ".png", ".webp", ".gif" };
 
+    /// <summary>Where a song lands when nothing tells us what it is.</summary>
+    private const string DefaultCategory = "Uncategorized";
+
     private readonly ISongRepository _songs;
+    private readonly ICategoryRepository _categories;
     private readonly IStorageService _storage;
     private readonly IYoutubeAudioExtractor _youtube;
     private readonly IUploadLimits _limits;
+    private readonly ITrackTagReader _tags;
+    private readonly ILyricsProvider _lyrics;
+    private readonly ILogger<SongService> _logger;
 
-    public SongService(ISongRepository songs, IStorageService storage, IYoutubeAudioExtractor youtube,
-        IUploadLimits limits)
+    public SongService(ISongRepository songs, ICategoryRepository categories, IStorageService storage,
+        IYoutubeAudioExtractor youtube, IUploadLimits limits, ITrackTagReader tags, ILyricsProvider lyrics,
+        ILogger<SongService> logger)
     {
+        _logger = logger;
         _songs = songs;
+        _categories = categories;
         _storage = storage;
         _youtube = youtube;
         _limits = limits;
+        _tags = tags;
+        _lyrics = lyrics;
     }
 
     /// <summary>
@@ -111,6 +124,22 @@ public class SongService : ISongService
         if (await _songs.FindDuplicateAsync(contentHash, null) is not null)
             throw new AppException("This exact audio file is already in the library.", 409);
 
+        // Read the file's own tags for artist/genre/duration. What the uploader typed always wins;
+        // the tags only fill the gaps. HashAndRewindAsync guarantees a seekable stream by here,
+        // which TagLib needs, and the reader restores the position for the upload below.
+        var metadata = new TrackMetadata(
+                Title: request.SongName,
+                Artist: request.Artist,
+                Category: request.Category,
+                DurationInSeconds: request.DurationInSeconds)
+            .FillFrom(_tags.Read(audioContent, audio.FileName));
+
+        // Same song, same artist, already here — refuse, so the library doesn't fill with copies
+        // of one track under slightly different file names.
+        await EnsureNotAlreadyPresentAsync(metadata, callerRole);
+
+        var categoryId = await ResolveCategoryIdAsync(metadata.Category);
+
         // Upload audio (and optional cover) to storage; store the returned keys in the DB.
         var audioResult = await _storage.UploadAsync(audioContent, audio.FileName, audio.ContentType, "songs", cancellationToken);
 
@@ -125,15 +154,17 @@ public class SongService : ISongService
 
             var song = await _songs.InsertAsync(
                 Guid.NewGuid(),
-                request.SongName,
+                TrimName(metadata.Title ?? request.SongName),
                 audioResult.StorageKey,
                 coverKey,
-                request.DurationInSeconds,
+                metadata.DurationInSeconds,
                 request.Priority,
                 contentHash: contentHash,
-                uploadedByAccountId: uploadedByAccountId);
+                uploadedByAccountId: uploadedByAccountId,
+                artist: metadata.Artist,
+                categoryId: categoryId);
 
-            return Map(song);
+            return await WithLyricsAsync(song, metadata, cancellationToken);
         }
         catch
         {
@@ -150,12 +181,18 @@ public class SongService : ISongService
             throw new AppException("A YouTube URL is required.", 400);
 
         var preview = await _youtube.GetPreviewAsync(url.Trim(), cancellationToken);
+        var suggested = ResolveYoutubeMetadata(preview.Title, preview.Author, preview.Music,
+            preview.DurationInSeconds, TrackMetadata.Empty);
+
         return new YoutubePreviewDto
         {
             Title = preview.Title,
             Author = preview.Author,
             DurationInSeconds = preview.DurationInSeconds,
-            ThumbnailUrl = preview.ThumbnailUrl
+            ThumbnailUrl = preview.ThumbnailUrl,
+            SuggestedSongName = suggested.Title,
+            SuggestedArtist = suggested.Artist,
+            SuggestedCategory = suggested.Category ?? DefaultCategory
         };
     }
 
@@ -184,8 +221,15 @@ public class SongService : ISongService
         // `media` is disposed, so a rejected import leaves nothing behind, locally or in B2.
         EnforceSize(media.AudioSizeBytes, _limits.MaxSongMegabytesFor(callerRole), "song");
 
-        var rawName = string.IsNullOrWhiteSpace(request.SongName) ? media.Title : request.SongName;
-        var songName = TrimName(rawName);
+        var metadata = ResolveYoutubeMetadata(media.Title, media.Author, media.Music, media.DurationInSeconds,
+            new TrackMetadata(Title: request.SongName, Artist: request.Artist, Category: request.Category));
+        var songName = TrimName(metadata.Title ?? media.Title);
+
+        // A different YouTube link to the same recording is still the same song. The source-key
+        // check above only catches the identical video, so match on title + artist as well.
+        await EnsureNotAlreadyPresentAsync(metadata with { Title = songName }, callerRole);
+
+        var categoryId = await ResolveCategoryIdAsync(metadata.Category);
 
         // Upload the audio to permanent storage (Backblaze B2), then the thumbnail as the cover.
         await using var audioStream = media.OpenAudio();
@@ -209,12 +253,14 @@ public class SongService : ISongService
                 songName,
                 audioResult.StorageKey,
                 coverKey,
-                media.DurationInSeconds,
+                metadata.DurationInSeconds ?? media.DurationInSeconds,
                 request.Priority,
                 sourceKey: sourceKey,
-                uploadedByAccountId: uploadedByAccountId);
+                uploadedByAccountId: uploadedByAccountId,
+                artist: metadata.Artist,
+                categoryId: categoryId);
 
-            return Map(song);
+            return await WithLyricsAsync(song, metadata with { Title = songName }, cancellationToken);
         }
         catch
         {
@@ -227,15 +273,27 @@ public class SongService : ISongService
 
     public async Task<SongDto> UpdateAsync(Guid songId, UpdateSongRequest request)
     {
+        // A blank category means "leave it alone" rather than "move to Uncategorized" — the
+        // update function keeps the existing value when it receives null.
+        Guid? categoryId = string.IsNullOrWhiteSpace(request.Category)
+            ? null
+            : (await _categories.GetOrCreateAsync(request.Category)).CategoryId;
+
         var song = await _songs.UpdateAsync(
             songId,
             request.SongName,
             request.SongUrl,
             request.ImageUrl,
             request.DurationInSeconds,
-            request.Priority);
+            request.Priority,
+            artist: request.Artist,
+            categoryId: categoryId);
         return Map(song);
     }
+
+    public async Task<IEnumerable<CategoryDto>> GetCategoriesAsync()
+        => (await _categories.GetAllAsync())
+            .Select(c => new CategoryDto { CategoryId = c.CategoryId, Name = c.Name, TotalSongs = c.TotalSongs });
 
     public async Task<MessageResponse> DeleteAsync(Guid songId, Guid callerAccountId, string callerRole, CancellationToken cancellationToken = default)
     {
@@ -258,6 +316,86 @@ public class SongService : ISongService
         await _storage.DeleteAsync(song.ImageUrl, cancellationToken);
 
         return await _songs.HardDeleteAsync(songId);
+    }
+
+    /// <summary>
+    /// Layers the metadata sources for a YouTube import, best first:
+    ///
+    ///   1. what the uploader typed — an explicit correction always wins;
+    ///   2. YouTube's own structured music fields, which come from the label rather than the
+    ///      uploader and are the most trustworthy thing available;
+    ///   3. the title parser, which strips "| Movie | Cast | Label" noise off the video title;
+    ///   4. the raw title, so there is always at least a name.
+    /// </summary>
+    private static TrackMetadata ResolveYoutubeMetadata(string rawTitle, string? uploader,
+        TrackMetadata? youtubeMusic, int? duration, TrackMetadata explicitValues)
+        => explicitValues
+            .FillFrom(youtubeMusic ?? TrackMetadata.Empty)
+            .FillFrom(TrackTitleParser.Parse(rawTitle, uploader))
+            .FillFrom(new TrackMetadata(Title: rawTitle, DurationInSeconds: duration));
+
+    /// <summary>
+    /// Blocks re-uploading a song that is already in the library under the same title and artist.
+    ///
+    /// SuperAdmin is exempt on purpose: a cover, a remix, a live cut and a re-recording are all
+    /// legitimately "the same title by the same artist", and someone has to be able to add them.
+    /// </summary>
+    private async Task EnsureNotAlreadyPresentAsync(TrackMetadata metadata, string callerRole)
+    {
+        if (string.Equals(callerRole, Roles.SuperAdmin, StringComparison.OrdinalIgnoreCase)) return;
+        if (string.IsNullOrWhiteSpace(metadata.Title)) return;
+
+        var existing = await _songs.FindByTitleArtistAsync(metadata.Title, metadata.Artist);
+        if (existing is null) return;
+
+        var by = string.IsNullOrWhiteSpace(metadata.Artist) ? "" : $" by {metadata.Artist}";
+        throw new AppException($"\"{metadata.Title}\"{by} is already in the library.", 409);
+    }
+
+    /// <summary>
+    /// Resolves a category name to its id, creating the category if this is the first song to use
+    /// it. That is what makes categories self-maintaining: nobody has to seed a list up front.
+    /// </summary>
+    private async Task<Guid?> ResolveCategoryIdAsync(string? name)
+    {
+        var category = await _categories.GetOrCreateAsync(
+            string.IsNullOrWhiteSpace(name) ? DefaultCategory : name.Trim());
+        return category.CategoryId;
+    }
+
+    /// <summary>
+    /// Looks lyrics up and attaches them to the saved song. Strictly best-effort and always last:
+    /// the song row already exists by this point, so a lyrics miss or an LRCLIB outage costs the
+    /// uploader nothing but a blank lyrics panel.
+    /// </summary>
+    private async Task<SongDto> WithLyricsAsync(Song song, TrackMetadata metadata, CancellationToken cancellationToken)
+    {
+        var dto = Map(song);
+
+        var title = metadata.Title ?? song.SongName;
+        if (string.IsNullOrWhiteSpace(title)) return dto;
+
+        var found = await _lyrics.FindAsync(title, metadata.Artist ?? song.Artist, metadata.Album,
+            song.DurationInSeconds ?? metadata.DurationInSeconds, cancellationToken);
+        if (found is null) return dto;
+
+        try
+        {
+            await _songs.SetLyricsAsync(song.SongId, found.Plain, found.Synced);
+        }
+        catch (Exception ex)
+        {
+            // The song, its audio and its cover are already saved and safe. Storing lyrics is the
+            // last and least important step, so a failure here must not turn a successful upload
+            // into an error the uploader sees — they'd be told it failed while the song sits
+            // perfectly fine in the library.
+            _logger.LogWarning(ex, "Could not store lyrics for song {SongId}", song.SongId);
+            return dto;
+        }
+
+        dto.Lyrics = found.Plain;
+        dto.LyricsSynced = found.Synced;
+        return dto;
     }
 
     // Song names are capped at 250 chars in the DB; YouTube titles can be longer.
@@ -307,6 +445,11 @@ public class SongService : ISongService
         MyVote = s.MyVote,
         UploadedByAccountId = s.UploadedByAccountId,
         Created = s.Created == default ? null : s.Created,
-        Updated = s.Updated
+        Updated = s.Updated,
+        Artist = s.Artist,
+        CategoryId = s.CategoryId,
+        Category = s.Category,
+        Lyrics = s.Lyrics,
+        LyricsSynced = s.LyricsSynced
     };
 }

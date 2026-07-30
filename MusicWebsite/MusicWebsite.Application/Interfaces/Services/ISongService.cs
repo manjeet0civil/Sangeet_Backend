@@ -19,4 +19,6 @@ public interface ISongService
     /// <summary>Permanently deletes a song (and its cloud files). Enforces role/ownership.</summary>
     Task<MessageResponse> DeleteAsync(Guid songId, Guid callerAccountId, string callerRole, CancellationToken cancellationToken = default);
     Task<SongDto> UpdateAsync(Guid songId, UpdateSongRequest request);
+    /// <summary>Every category with its live song count — for browsing and the upload picker.</summary>
+    Task<IEnumerable<CategoryDto>> GetCategoriesAsync();
 }

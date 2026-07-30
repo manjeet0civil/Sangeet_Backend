@@ -29,6 +29,15 @@ public class SongsController : ControllerBase
         return Ok(ApiResponse<IEnumerable<SongDto>>.Ok(songs));
     }
 
+    /// <summary>
+    /// Every category with its song count. Categories are created automatically by uploads, so
+    /// this list grows on its own — there is nothing to seed or administer.
+    /// </summary>
+    [HttpGet("categories")]
+    public async Task<ActionResult<ApiResponse<IEnumerable<CategoryDto>>>> Categories()
+        => Ok(ApiResponse<IEnumerable<CategoryDto>>.Ok(await _songs.GetCategoriesAsync()));
+
+    /// <summary>A single song, including its lyrics (list endpoints omit lyrics to stay small).</summary>
     [HttpGet("{songId:guid}")]
     public async Task<ActionResult<ApiResponse<SongDto>>> GetById(Guid songId)
     {

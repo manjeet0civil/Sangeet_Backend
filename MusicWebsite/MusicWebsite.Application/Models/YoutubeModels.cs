@@ -1,7 +1,17 @@
 namespace MusicWebsite.Application.Models;
 
 /// <summary>Lightweight metadata for previewing a YouTube video before importing it.</summary>
-public record YoutubePreview(string Title, string? Author, int? DurationInSeconds, string? ThumbnailUrl);
+/// <param name="Music">
+/// Structured music fields (artist/track/album/genre) when YouTube has them. Populated for
+/// anything published through YouTube Music, where the label supplied real metadata — far more
+/// trustworthy than anything parsed out of the video title.
+/// </param>
+public record YoutubePreview(
+    string Title,
+    string? Author,
+    int? DurationInSeconds,
+    string? ThumbnailUrl,
+    TrackMetadata? Music = null);
 
 /// <summary>
 /// The result of extracting audio from a YouTube video. Holds temp file paths on the server;
@@ -13,6 +23,12 @@ public sealed class ExtractedYoutubeAudio : IAsyncDisposable
     public required string Title { get; init; }
     public string? Author { get; init; }
     public int? DurationInSeconds { get; init; }
+
+    /// <summary>
+    /// Structured music metadata straight from YouTube (artist, track, album, genre), when the
+    /// video was published through YouTube Music. Null or partly empty for ordinary uploads.
+    /// </summary>
+    public TrackMetadata? Music { get; init; }
 
     public required string AudioFilePath { get; init; }
     public required string AudioFileName { get; init; }

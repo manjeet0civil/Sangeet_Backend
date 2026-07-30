@@ -20,4 +20,15 @@ public class Song
     public Guid? UploadedByAccountId { get; set; }
     /// <summary>The current caller's own vote for this song (-1, 0, or 1). Not stored on the row.</summary>
     public int MyVote { get; set; }
+
+    /// <summary>Performer, filled in automatically on upload from ID3 tags or YouTube metadata.</summary>
+    public string? Artist { get; set; }
+    /// <summary>Category this song belongs to. Categories are created on demand.</summary>
+    public Guid? CategoryId { get; set; }
+    /// <summary>Category name, joined in by the read functions. Not a column on the row.</summary>
+    public string? Category { get; set; }
+    /// <summary>Plain-text lyrics. Only returned by GetById — list endpoints stay lean.</summary>
+    public string? Lyrics { get; set; }
+    /// <summary>Timestamped LRC lyrics that can scroll in time with playback.</summary>
+    public string? LyricsSynced { get; set; }
 }

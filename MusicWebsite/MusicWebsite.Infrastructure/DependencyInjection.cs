@@ -36,6 +36,7 @@ public static class DependencyInjection
         services.AddScoped<ISongRepository, SongRepository>();
         services.AddScoped<IPlaylistRepository, PlaylistRepository>();
         services.AddScoped<IPlaylistSongRepository, PlaylistSongRepository>();
+        services.AddScoped<ICategoryRepository, CategoryRepository>();
 
         // Security
         services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
@@ -45,6 +46,41 @@ public static class DependencyInjection
 
         // Storage — Backblaze B2 (S3-compatible) when configured, otherwise a no-op stub.
         AddStorage(services, configuration);
+
+        // Reads ID3/MP4/Vorbis tags off uploaded files — the artist, title and duration the
+        // producer wrote into the file, so nothing has to be guessed for a direct upload.
+        services.AddSingleton<ITrackTagReader, TagLibTrackTagReader>();
+
+        // Lyrics lookup. Two free, key-less sources behind one chained provider: LRCLIB first
+        // because only it has timestamped lyrics, lyrics.ovh as the plain-text fallback for when
+        // LRCLIB misses or its API is down (which it has been for extended stretches).
+        //
+        // Typed HttpClients so handlers are pooled and each base address and User-Agent is set
+        // once. The per-client timeout sits just above the provider's own cap, so the provider's
+        // friendlier cancellation wins in the normal case.
+        services.Configure<LyricsSettings>(configuration.GetSection(LyricsSettings.SectionName));
+        var lyrics = configuration.GetSection(LyricsSettings.SectionName).Get<LyricsSettings>() ?? new LyricsSettings();
+        var lyricsHttpTimeout = TimeSpan.FromSeconds(Math.Max(lyrics.TimeoutSeconds, 1) + 2);
+
+        services.AddHttpClient<LrcLibLyricsProvider>(client =>
+        {
+            client.BaseAddress = new Uri(lyrics.LrcLibBaseUrl.TrimEnd('/'));
+            // LRCLIB asks callers to identify themselves rather than send a default agent string.
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Sangeet/1.0 (https://sangeet-web.onrender.com)");
+            client.Timeout = lyricsHttpTimeout;
+        });
+
+        services.AddHttpClient<LyricsOvhLyricsProvider>(client =>
+        {
+            client.BaseAddress = new Uri(lyrics.LyricsOvhBaseUrl.TrimEnd('/'));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Sangeet/1.0 (https://sangeet-web.onrender.com)");
+            client.Timeout = lyricsHttpTimeout;
+        });
+
+        // Singleton so one request's discovery that a source is down spares every later request
+        // its timeout. Self-healing: it probes again after a cooldown.
+        services.AddSingleton<LyricsSourceCircuitBreaker>();
+        services.AddScoped<ILyricsProvider, ChainedLyricsProvider>();
 
         // YouTube audio extraction. "YtDlp" = robust (needs yt-dlp.exe); otherwise the pure-.NET scraper.
         services.Configure<YoutubeSettings>(configuration.GetSection(YoutubeSettings.SectionName));
