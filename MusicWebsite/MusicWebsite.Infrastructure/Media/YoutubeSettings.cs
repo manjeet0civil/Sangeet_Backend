@@ -13,4 +13,19 @@ public class YoutubeSettings
 
     /// <summary>Max seconds to allow a single yt-dlp download before giving up.</summary>
     public int TimeoutSeconds { get; set; } = 180;
+
+    /// <summary>
+    /// Optional HTTP proxy, applied to <b>yt-dlp only</b> — nothing else in the application
+    /// routes through it. The database, Backblaze B2 and every API request keep using the
+    /// server's own connection.
+    ///
+    /// Why it exists: YouTube blocks datacenter IP ranges and answers with "Sign in to confirm
+    /// you're not a bot" for every video, including public ones. Sending just the YouTube
+    /// traffic through a residential proxy is what gets around that.
+    ///
+    /// Format: <c>http://user:password@host:port</c>. Leave empty to make direct connections.
+    /// Set it via the environment variable <c>Youtube__ProxyUrl</c> — it contains credentials,
+    /// so it must never be committed to the repository.
+    /// </summary>
+    public string? ProxyUrl { get; set; }
 }

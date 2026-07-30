@@ -153,6 +153,19 @@ public partial class YtDlpAudioExtractor : IYoutubeAudioExtractor
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        // Route ONLY yt-dlp through the proxy when one is configured. Nothing else in the
+        // application uses it — the database, B2 and every API call keep the server's own
+        // connection. This is what gets past YouTube blocking datacenter IPs.
+        //
+        // Added to ArgumentList rather than to `args` on purpose: the failure log below prints
+        // `args`, and the proxy URL carries a username and password that must stay out of logs.
+        if (!string.IsNullOrWhiteSpace(_settings.ProxyUrl))
+        {
+            psi.ArgumentList.Add("--proxy");
+            psi.ArgumentList.Add(_settings.ProxyUrl);
+        }
+
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var process = new Process { StartInfo = psi };
