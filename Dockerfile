@@ -77,6 +77,16 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
     Youtube__TimeoutSeconds=90 \
     DOTNET_RUNNING_IN_CONTAINER=true
 
+# Crash guards for small/locked-down container hosts.
+#   EnableWriteXorExecute=0 — .NET 7/8 enable W^X memory protection by default, a documented
+#     cause of SIGSEGV (exit code 139) on some container/kernel combinations.
+#   gcServer=0 — workstation GC, so the runtime doesn't size heaps for a big multi-core host
+#     when it only has 512 MB and 0.1 CPU.
+# (Kept as separate ENV lines: Docker does not reliably allow comments inside a continued
+#  instruction, which would break the build.)
+ENV DOTNET_EnableWriteXorExecute=0
+ENV DOTNET_gcServer=0
+
 # Run as the unprivileged "app" user that the .NET 8 images provide (UID 1654).
 # yt-dlp writes downloads to /tmp, which is world-writable, so this needs no extra setup.
 USER app

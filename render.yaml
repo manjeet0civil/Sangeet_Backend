@@ -15,8 +15,6 @@ services:
   - type: web
     name: sangeet-api
     runtime: docker
-    repo: https://github.com/YOUR_USER/YOUR_REPO      # <-- set this, or remove when deploying from a connected repo
-    branch: develop
     region: singapore
     plan: free
     dockerfilePath: ./Dockerfile
