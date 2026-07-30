@@ -12,9 +12,9 @@ public interface ISongService
     /// <summary>Paginated list of the songs the given account uploaded (newest first).</summary>
     Task<PagedResult<SongDto>> GetMyUploadsAsync(Guid accountId, int page, int pageSize);
     Task<SongDto> CreateAsync(CreateSongRequest request, Guid uploadedByAccountId);
-    Task<SongDto> UploadAsync(UploadSongRequest request, UploadFileInput audio, UploadFileInput? cover, Guid uploadedByAccountId, CancellationToken cancellationToken = default);
+    Task<SongDto> UploadAsync(UploadSongRequest request, UploadFileInput audio, UploadFileInput? cover, Guid uploadedByAccountId, string callerRole, CancellationToken cancellationToken = default);
     Task<YoutubePreviewDto> GetYoutubePreviewAsync(string url, CancellationToken cancellationToken = default);
-    Task<SongDto> ImportFromYoutubeAsync(ImportYoutubeRequest request, Guid uploadedByAccountId, CancellationToken cancellationToken = default);
+    Task<SongDto> ImportFromYoutubeAsync(ImportYoutubeRequest request, Guid uploadedByAccountId, string callerRole, CancellationToken cancellationToken = default);
     Task<SongDto> SetVoteAsync(Guid accountId, Guid songId, int value);
     /// <summary>Permanently deletes a song (and its cloud files). Enforces role/ownership.</summary>
     Task<MessageResponse> DeleteAsync(Guid songId, Guid callerAccountId, string callerRole, CancellationToken cancellationToken = default);

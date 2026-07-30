@@ -41,6 +41,7 @@ public static class DependencyInjection
         services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
         services.AddSingleton<ITokenService, JwtTokenService>();
         services.AddSingleton<IRoleDefaults, RoleDefaults>();
+        services.AddSingleton<IUploadLimits, UploadLimits>();
 
         // Storage — Backblaze B2 (S3-compatible) when configured, otherwise a no-op stub.
         AddStorage(services, configuration);

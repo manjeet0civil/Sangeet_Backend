@@ -108,7 +108,7 @@ public class SongsController : ControllerBase
 
         try
         {
-            var song = await _songs.UploadAsync(metadata, audio, cover, User.GetAccountId(), cancellationToken);
+            var song = await _songs.UploadAsync(metadata, audio, cover, User.GetAccountId(), User.GetRole(), cancellationToken);
             return CreatedAtAction(nameof(GetById), new { songId = song.SongId },
                 ApiResponse<SongDto>.Ok(song, "Song uploaded."));
         }
@@ -138,7 +138,7 @@ public class SongsController : ControllerBase
     public async Task<ActionResult<ApiResponse<SongDto>>> ImportYoutube(
         [FromBody] ImportYoutubeRequest request, CancellationToken cancellationToken)
     {
-        var song = await _songs.ImportFromYoutubeAsync(request, User.GetAccountId(), cancellationToken);
+        var song = await _songs.ImportFromYoutubeAsync(request, User.GetAccountId(), User.GetRole(), cancellationToken);
         return CreatedAtAction(nameof(GetById), new { songId = song.SongId },
             ApiResponse<SongDto>.Ok(song, "Song imported from YouTube."));
     }

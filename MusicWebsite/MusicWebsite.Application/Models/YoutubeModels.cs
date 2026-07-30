@@ -25,6 +25,9 @@ public sealed class ExtractedYoutubeAudio : IAsyncDisposable
     /// <summary>Optional temp directory to remove entirely on dispose (used by the yt-dlp extractor).</summary>
     public string? TempDirectory { get; init; }
 
+    /// <summary>Size of the extracted audio on disk, so it can be size-checked before upload.</summary>
+    public long AudioSizeBytes => File.Exists(AudioFilePath) ? new FileInfo(AudioFilePath).Length : 0;
+
     public Stream OpenAudio() => File.OpenRead(AudioFilePath);
 
     public Stream? OpenThumbnail() =>

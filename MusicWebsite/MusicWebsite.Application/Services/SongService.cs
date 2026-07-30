@@ -20,12 +20,31 @@ public class SongService : ISongService
     private readonly ISongRepository _songs;
     private readonly IStorageService _storage;
     private readonly IYoutubeAudioExtractor _youtube;
+    private readonly IUploadLimits _limits;
 
-    public SongService(ISongRepository songs, IStorageService storage, IYoutubeAudioExtractor youtube)
+    public SongService(ISongRepository songs, IStorageService storage, IYoutubeAudioExtractor youtube,
+        IUploadLimits limits)
     {
         _songs = songs;
         _storage = storage;
         _youtube = youtube;
+        _limits = limits;
+    }
+
+    /// <summary>
+    /// Rejects files that are too large before a single byte reaches storage.
+    /// Anything much bigger than a song is not a song, and every stored byte costs storage plus
+    /// egress on each play. SuperAdmin gets a higher cap; everyone shares the cover-image cap.
+    /// </summary>
+    private static void EnforceSize(long bytes, int maxMegabytes, string what)
+    {
+        var maxBytes = (long)maxMegabytes * 1024 * 1024;
+        if (bytes <= maxBytes) return;
+
+        var actualMb = bytes / (1024.0 * 1024.0);
+        throw new AppException(
+            $"This {what} is {actualMb:0.#} MB, over the {maxMegabytes} MB limit. " +
+            $"Use a smaller file or a lower bitrate.", 413);
     }
 
     public async Task<IEnumerable<SongDto>> GetAllAsync(Guid? accountId = null)
@@ -76,11 +95,16 @@ public class SongService : ISongService
         return Map(song);
     }
 
-    public async Task<SongDto> UploadAsync(UploadSongRequest request, UploadFileInput audio, UploadFileInput? cover, Guid uploadedByAccountId, CancellationToken cancellationToken = default)
+    public async Task<SongDto> UploadAsync(UploadSongRequest request, UploadFileInput audio, UploadFileInput? cover, Guid uploadedByAccountId, string callerRole, CancellationToken cancellationToken = default)
     {
         ValidateExtension(audio.FileName, AllowedAudioExtensions, "audio");
         if (cover is not null)
             ValidateExtension(cover.FileName, AllowedImageExtensions, "image");
+
+        // Size check first — cheapest rejection, and it happens before hashing or any storage call.
+        EnforceSize(audio.Length, _limits.MaxSongMegabytesFor(callerRole), "song");
+        if (cover is not null)
+            EnforceSize(cover.Length, _limits.MaxCoverMegabytes, "cover image");
 
         // Fingerprint the audio and reject exact duplicates BEFORE spending an upload to storage.
         var (contentHash, audioContent) = await HashAndRewindAsync(audio.Content, cancellationToken);
@@ -135,7 +159,7 @@ public class SongService : ISongService
         };
     }
 
-    public async Task<SongDto> ImportFromYoutubeAsync(ImportYoutubeRequest request, Guid uploadedByAccountId, CancellationToken cancellationToken = default)
+    public async Task<SongDto> ImportFromYoutubeAsync(ImportYoutubeRequest request, Guid uploadedByAccountId, string callerRole, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(request.Url))
             throw new AppException("A YouTube URL is required.", 400);
@@ -154,6 +178,11 @@ public class SongService : ISongService
         // Extract the audio-only track to a temp file (disposed at the end of this method, which
         // deletes it — nothing accumulates on the server).
         await using var media = await _youtube.ExtractAsync(request.Url.Trim(), cancellationToken);
+
+        // Same cap as a direct upload. Checked after extraction (the size isn't known until the
+        // audio exists) but before anything is sent to storage — the temp file is deleted when
+        // `media` is disposed, so a rejected import leaves nothing behind, locally or in B2.
+        EnforceSize(media.AudioSizeBytes, _limits.MaxSongMegabytesFor(callerRole), "song");
 
         var rawName = string.IsNullOrWhiteSpace(request.SongName) ? media.Title : request.SongName;
         var songName = TrimName(rawName);

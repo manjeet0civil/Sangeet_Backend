@@ -16,5 +16,13 @@ public class B2Settings
     public string KeyId { get; set; } = string.Empty;
     public string ApplicationKey { get; set; } = string.Empty;
     public int PresignExpiryMinutes { get; set; } = 120;
-    public int MaxUploadMegabytes { get; set; } = 100;
+
+    /// <summary>Largest audio file a User/Admin may upload or import (MB). ~8 min at 320 kbps.</summary>
+    public int MaxUploadMegabytes { get; set; } = 20;
+
+    /// <summary>Largest audio file a SuperAdmin may upload (MB). Bounded by the API request limit.</summary>
+    public int MaxUploadMegabytesSuperAdmin { get; set; } = 100;
+
+    /// <summary>Largest cover image (MB), for every role — a cover is never large.</summary>
+    public int MaxCoverMegabytes { get; set; } = 5;
 }
