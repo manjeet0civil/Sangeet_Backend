@@ -57,7 +57,7 @@ services:
       # every ID token is verified against, so a mismatch rejects every sign-in.
       # Empty leaves the feature off: /api/auth/google answers 501 instead of trusting tokens.
       - key: Google__ClientId
-        value: ""
+        value: "768901565829-v7m1j7h0kh4vcdd6tspl11f3a46h81rq.apps.googleusercontent.com"
 
       # ---- Storage (Backblaze B2, us-east-005) ----
       - key: Storage__Provider
