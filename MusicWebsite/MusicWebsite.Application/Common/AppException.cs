@@ -13,4 +13,15 @@ public class AppException : Exception
     {
         StatusCode = statusCode;
     }
+
+    /// <summary>
+    /// Keeps the underlying failure attached for the logs while the caller only sees
+    /// <paramref name="message"/> — used where the real cause (a rejected Google token, say)
+    /// is worth recording but not worth telling the client.
+    /// </summary>
+    public AppException(string message, int statusCode, Exception innerException)
+        : base(message, innerException)
+    {
+        StatusCode = statusCode;
+    }
 }

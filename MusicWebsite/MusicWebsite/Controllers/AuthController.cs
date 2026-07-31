@@ -31,6 +31,19 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
+    /// Sign in with Google. Takes the ID token from the Google Identity Services button, verifies
+    /// it server-side, and returns the same JWT as the other two routes — so everything downstream
+    /// is unaware of how the user got here. Creates the account on first sign-in, and links to an
+    /// existing account when the verified email already has one.
+    /// </summary>
+    [HttpPost("google")]
+    public async Task<ActionResult<ApiResponse<AuthResponse>>> Google([FromBody] GoogleSignInRequest request)
+    {
+        var result = await _auth.GoogleSignInAsync(request);
+        return Ok(ApiResponse<AuthResponse>.Ok(result, "Login successful."));
+    }
+
+    /// <summary>
     /// Stateless logout. JWTs are self-contained, so the client simply discards the token;
     /// this endpoint exists for symmetry and future refresh-token revocation.
     /// </summary>

@@ -29,6 +29,7 @@ public static class DependencyInjection
         // Options
         services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
         services.Configure<StorageSettings>(configuration.GetSection(StorageSettings.SectionName));
+        services.Configure<GoogleSettings>(configuration.GetSection(GoogleSettings.SectionName));
 
         // Repositories
         services.AddScoped<IAccountRepository, AccountRepository>();
@@ -42,6 +43,9 @@ public static class DependencyInjection
         services.AddSingleton<IPasswordHasher, BcryptPasswordHasher>();
         services.AddSingleton<ITokenService, JwtTokenService>();
         services.AddSingleton<IRoleDefaults, RoleDefaults>();
+        // Google ID-token verification. Registered whether or not a client id is set — with none,
+        // it fails the request with 501 instead of the endpoint disappearing.
+        services.AddSingleton<IGoogleTokenValidator, GoogleTokenValidator>();
         services.AddSingleton<IUploadLimits, UploadLimits>();
 
         // Storage — Backblaze B2 (S3-compatible) when configured, otherwise a no-op stub.

@@ -12,6 +12,9 @@ public static class StoredProcedures
     public const string AccountGetAllWithRole = "procAccountGetAllWithRole";
     public const string AccountSetRole = "procAccountSetRole";
     public const string AccountCascadeDelete = "procAccountCascadeDelete";
+    public const string AccountGetByGoogle = "procAccountGetByGoogle";
+    public const string AccountInsertGoogle = "procAccountInsertGoogle";
+    public const string AccountLinkGoogle = "procAccountLinkGoogle";
 
     // Users
     public const string UserInsert = "procUserInsert";

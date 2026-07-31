@@ -51,6 +51,14 @@ services:
       - key: FRONTEND_ORIGINS
         value: https://CHANGE-ME.onrender.com
 
+      # ---- Sign in with Google ----
+      # The OAuth 2.0 Web client id from Google Cloud Console. Not a secret (the browser gets it
+      # too), but it must match the frontend's VITE_GOOGLE_CLIENT_ID exactly — it is the audience
+      # every ID token is verified against, so a mismatch rejects every sign-in.
+      # Empty leaves the feature off: /api/auth/google answers 501 instead of trusting tokens.
+      - key: Google__ClientId
+        value: ""
+
       # ---- Storage (Backblaze B2, us-east-005) ----
       - key: Storage__Provider
         value: BackblazeB2

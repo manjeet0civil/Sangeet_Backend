@@ -19,6 +19,7 @@ public static class PostgresErrorTranslator
     private static readonly HashSet<int> Conflict = new()
     {
         50001, // Email already exists
+        50004, // Google account already linked to a different account
         50011, // Username already exists (insert)
         50013, // Username already exists (update)
         50032, // Playlist already exists
@@ -29,7 +30,7 @@ public static class PostgresErrorTranslator
     // 404 Not Found — missing rows
     private static readonly HashSet<int> NotFound = new()
     {
-        50002, 50003,               // Account not found
+        50002, 50003, 50005,        // Account not found
         50012,                      // User not found
         50020, 50021,               // Song not found
         50033, 50036, 50037,        // Playlist does not exist

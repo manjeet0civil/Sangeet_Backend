@@ -29,6 +29,16 @@ public class LoginRequest
     public string Password { get; set; } = string.Empty;
 }
 
+public class GoogleSignInRequest
+{
+    /// <summary>
+    /// The ID token (JWT) Google hands the browser — the <c>credential</c> field of the Google
+    /// Identity Services callback. Verified server-side before anything is trusted.
+    /// </summary>
+    [Required]
+    public string IdToken { get; set; } = string.Empty;
+}
+
 public class AuthResponse
 {
     public string AccessToken { get; set; } = string.Empty;

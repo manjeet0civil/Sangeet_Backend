@@ -22,6 +22,18 @@ public class AccountRepository : RepositoryBase, IAccountRepository
         => QuerySingleOrDefaultAsync<AccountCredentials>(StoredProcedures.AccountLogin,
             new { Email = email });
 
+    public Task<AccountCredentials?> GetCredentialsByGoogleSubjectAsync(string googleSubject)
+        => QuerySingleOrDefaultAsync<AccountCredentials>(StoredProcedures.AccountGetByGoogle,
+            new { GoogleSubject = googleSubject });
+
+    public Task<Account> InsertGoogleAsync(Guid accountId, string email, string googleSubject, string role)
+        => QueryFirstAsync<Account>(StoredProcedures.AccountInsertGoogle,
+            new { AccountId = accountId, Email = email, GoogleSubject = googleSubject, Role = role });
+
+    public Task<Account> LinkGoogleAsync(Guid accountId, string googleSubject)
+        => QueryFirstAsync<Account>(StoredProcedures.AccountLinkGoogle,
+            new { AccountId = accountId, GoogleSubject = googleSubject });
+
     public Task<Account> UpdateAsync(Guid accountId, string email, bool isActive)
         => QueryFirstAsync<Account>(StoredProcedures.AccountUpdate,
             new { AccountId = accountId, Email = email, IsActive = isActive });

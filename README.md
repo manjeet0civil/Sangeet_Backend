@@ -545,8 +545,33 @@ All routes except register/login require `Authorization: Bearer <token>`.
 | Method | Route | Body | Notes |
 |--------|-------|------|-------|
 | POST | `/register` | `{ email, password, userName, fullName, profileImageUrl? }` | Creates Account + User, returns JWT. `409` if email/username taken. |
-| POST | `/login` | `{ email, password }` | Returns JWT + profile. `401` if invalid. |
+| POST | `/login` | `{ email, password }` | Returns JWT + profile. `401` if invalid. A Google-created account has no password, so it answers `401` with "This account signs in with Google". |
+| **POST** | **`/google`** | `{ idToken }` | **Sign in with Google.** `idToken` is the `credential` from the Google button. Returns the same JWT as `/login`. Creates the account on first use, or links to the existing account with that verified email. `401` if the token fails verification, `501` if `Google:ClientId` isn't configured. |
 | POST | `/logout` | — | Stateless (client discards token). |
+
+#### Setting up Sign in with Google
+Off until a client id is configured — the endpoint answers `501` and the frontend hides the button,
+so nothing breaks if you skip this.
+
+1. **Google Cloud Console** → *APIs & Services* → *Credentials* → *Create credentials* →
+   *OAuth client ID* → **Web application**. Under **Authorised JavaScript origins** add every
+   origin the app is served from — e.g. `http://localhost:5173` and `https://sangeet-web.onrender.com`.
+   (No redirect URI is needed: the button uses the ID-token flow, not a redirect.)
+2. **Backend**: put the client id in `Google:ClientId` (`appsettings.json`) or the
+   `Google__ClientId` environment variable on Render.
+3. **Frontend**: put the *same* id in `VITE_GOOGLE_CLIENT_ID` and rebuild — `VITE_*` values are
+   baked in at build time.
+4. **Database**: run `db/postgres/04_google_sso.sql` once.
+
+The two ids must match exactly: the backend verifies each token's *audience* against its copy, so a
+mismatch rejects every sign-in with a `401`. The client id is **not** a secret — the browser
+receives it either way.
+
+**How accounts are matched.** A returning Google user is found by Google's `sub` claim (not the
+email, which people can change). An unrecognised `sub` whose **verified** email already has an
+account is linked to it, so someone who registered with a password can then use either route — this
+is only safe because Google asserts the address is verified. Anything else creates a new
+password-less account, inventing a free username from the email's local part.
 
 ### Account — `/api/account` (current user)
 | Method | Route | Notes |
